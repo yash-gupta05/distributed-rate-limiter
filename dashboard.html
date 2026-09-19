@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rate Limiter Dashboard</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --card-bg: #ffffff;
+    --border: #e3e2dd;
+    --text-primary: #1a1a18;
+    --text-secondary: #6b6a64;
+    --text-muted: #9a998f;
+    --accent: #185fa5;
+    --success: #0f6e56;
+    --danger: #993c1d;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1a;
+      --card-bg: #262624;
+      --border: #3a3a37;
+      --text-primary: #f0efe9;
+      --text-secondary: #b4b2a9;
+      --text-muted: #7d7c76;
+      --accent: #85b7eb;
+      --success: #5dcaa5;
+      --danger: #f0997b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text-primary);
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 24px; }
+  .config-row {
+    display: flex; gap: 12px; align-items: center; margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .config-row label { font-size: 13px; color: var(--text-secondary); }
+  .config-row input {
+    padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card-bg); color: var(--text-primary); font-size: 13px; width: 220px;
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px;
+  }
+  .status-dot.up { background: var(--success); }
+  .status-dot.down { background: var(--danger); }
+  .status-text { font-size: 13px; color: var(--text-secondary); }
+  .metrics-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px; margin-bottom: 24px;
+  }
+  .metric-card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px;
+  }
+  .metric-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .metric-value { font-size: 26px; font-weight: 500; }
+  .metric-value.success { color: var(--success); }
+  .metric-value.danger { color: var(--danger); }
+  .panel {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 16px;
+  }
+  .panel-title { font-size: 14px; font-weight: 500; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-secondary); font-weight: 500; }
+  .bar-bg { background: var(--border); border-radius: 4px; height: 6px; overflow: hidden; margin-top: 4px; }
+  .bar-fill { height: 100%; background: var(--success); }
+  .bar-fill.denied { background: var(--danger); }
+  .empty-state { color: var(--text-muted); font-size: 13px; padding: 12px 0; }
+  .refresh-note { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Rate limiter dashboard</h1>
+  <p class="subtitle">Live view of allow/deny activity, polled from the app's Actuator metrics endpoint.</p>
+
+  <div class="config-row">
+    <label for="base-url">App URL</label>
+    <input id="base-url" value="http://localhost:8080" />
+    <span id="status"><span class="status-dot down" id="status-dot"></span><span class="status-text" id="status-text">Checking...</span></span>
+  </div>
+
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">Total requests</div>
+      <div class="metric-value" id="total-count">–</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Allowed</div>
+      <div class="metric-value success" id="allowed-count">–</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Denied</div>
+      <div class="metric-value danger" id="denied-count">–</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Deny rate</div>
+      <div class="metric-value" id="deny-rate">–</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="panel-title">By client</p>
+    <table id="client-table">
+      <thead>
+        <tr><th>Client ID</th><th>Tier</th><th>Allowed</th><th>Denied</th><th>Denial rate</th></tr>
+      </thead>
+      <tbody id="client-tbody"></tbody>
+    </table>
+    <div class="empty-state" id="client-empty" style="display:none;">No traffic recorded yet — send some requests to the app to see data here.</div>
+  </div>
+
+  <p class="refresh-note">Refreshing every 3 seconds. This page reads only <code>/actuator/metrics/ratelimiter.requests</code> — no data is sent anywhere.</p>
+</div>
+
+<script>
+async function fetchTagValues(baseUrl, tag) {
+  const res = await fetch(`${baseUrl}/actuator/metrics/ratelimiter.requests`);
+  if (!res.ok) throw new Error('metrics endpoint returned ' + res.status);
+  const data = await res.json();
+  const found = data.availableTags.find(t => t.tag === tag);
+  return found ? found.values : [];
+}
+
+async function fetchCount(baseUrl, filters) {
+  const params = filters.map(([k, v]) => `tag=${encodeURIComponent(k)}:${encodeURIComponent(v)}`).join('&');
+  const url = `${baseUrl}/actuator/metrics/ratelimiter.requests${params ? '?' + params : ''}`;
+  const res = await fetch(url);
+
+  // A 404 here means "this specific tag combination has never occurred" —
+  // e.g. a client that has never been denied. That's a real count of 0,
+  // not a connectivity failure, so we handle it explicitly rather than throwing.
+  if (res.status === 404) return 0;
+
+  if (!res.ok) throw new Error('metrics endpoint returned ' + res.status);
+  const data = await res.json();
+  const measurement = data.measurements.find(m => m.statistic === 'COUNT');
+  return measurement ? measurement.value : 0;
+}
+
+function setStatus(up) {
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  dot.className = 'status-dot ' + (up ? 'up' : 'down');
+  text.textContent = up ? 'Connected' : 'Unreachable';
+}
+
+async function refresh() {
+  const baseUrl = document.getElementById('base-url').value.replace(/\/$/, '');
+
+  try {
+    const [total, allowed, denied, clientIds] = await Promise.all([
+      fetchCount(baseUrl, []),
+      fetchCount(baseUrl, [['outcome', 'allowed']]),
+      fetchCount(baseUrl, [['outcome', 'denied']]),
+      fetchTagValues(baseUrl, 'clientId'),
+    ]);
+
+    setStatus(true);
+    document.getElementById('total-count').textContent = total.toLocaleString();
+    document.getElementById('allowed-count').textContent = allowed.toLocaleString();
+    document.getElementById('denied-count').textContent = denied.toLocaleString();
+    document.getElementById('deny-rate').textContent = total > 0 ? (denied / total * 100).toFixed(1) + '%' : '–';
+
+    const tbody = document.getElementById('client-tbody');
+    const emptyState = document.getElementById('client-empty');
+
+    if (clientIds.length === 0) {
+      tbody.innerHTML = '';
+      emptyState.style.display = 'block';
+    } else {
+      emptyState.style.display = 'none';
+      const rows = await Promise.all(clientIds.map(async (clientId) => {
+        const [clientAllowed, clientDenied] = await Promise.all([
+          fetchCount(baseUrl, [['outcome', 'allowed'], ['clientId', clientId]]),
+          fetchCount(baseUrl, [['outcome', 'denied'], ['clientId', clientId]]),
+        ]);
+        const clientTotal = clientAllowed + clientDenied;
+        const denyPct = clientTotal > 0 ? (clientDenied / clientTotal * 100) : 0;
+        const tier = clientId.startsWith('apikey:premium') ? 'PREMIUM' : 'FREE';
+        return { clientId, tier, clientAllowed, clientDenied, denyPct };
+      }));
+
+      rows.sort((a, b) => (b.clientAllowed + b.clientDenied) - (a.clientAllowed + a.clientDenied));
+
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td>${r.clientId}</td>
+          <td>${r.tier}</td>
+          <td>${r.clientAllowed}</td>
+          <td>${r.clientDenied}</td>
+          <td>
+            ${r.denyPct.toFixed(0)}%
+            <div class="bar-bg"><div class="bar-fill denied" style="width:${r.denyPct}%"></div></div>
+          </td>
+        </tr>
+      `).join('');
+    }
+  } catch (e) {
+    setStatus(false);
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+document.getElementById('base-url').addEventListener('change', refresh);
+</script>
+</body>
+</html>
