@@ -1,10 +1,8 @@
 # Distributed Rate Limiter
 
-A production-style distributed rate limiter built in Java/Spring Boot, backed by Redis. Built to explore the real engineering tradeoffs behind rate limiting at scale: atomicity under concurrency, fault tolerance, horizontal scaling, and observability — not just "block requests after N."
+A production-style distributed rate limiter built with Java, Spring Boot, Redis, and Docker.
 
-## Why this project
-
-Rate limiters look simple on the surface but touch almost every hard problem in distributed systems: race conditions across multiple servers, graceful degradation when a dependency fails, and scaling storage without a full outage. This project implements and **tests** each of those problems directly, rather than just discussing them.
+The project explores the engineering challenges behind rate limiting in distributed systems, including atomicity under concurrency, distributed state, horizontal scaling, fault tolerance, consistent hashing, tiered limits, and observability.
 
 ## Architecture
 
@@ -25,7 +23,7 @@ Client → RateLimitFilter (middleware) → ClientIdentifier (who is this?)
 
 ## Algorithm: token bucket
 
-Each client has a bucket of tokens (default capacity: 10) that refills at a fixed rate (default: 2/sec). Each request consumes one token; if none are available, the request is denied (HTTP 429). Token bucket was chosen over sliding window / leaky bucket / fixed window because it explicitly allows controlled bursts — a client that's been quiet can burst up to capacity, which is generally desirable behavior (and is what AWS API Gateway and Stripe's rate limiters approximate).
+Each client has a bucket of tokens (default capacity: 10) that refills at a fixed rate (default: 2/sec). Each request consumes one token; if none are available, the request is denied (HTTP 429). Token bucket was chosen over sliding window / leaky bucket / fixed window because it explicitly allows controlled bursts — a client that's been quiet can burst up to capacity, which is generally desirable behavior.
 
 Refill is computed lazily at request time (`elapsed_time * refill_rate`), not via a background job — this keeps the system O(1) per request with no scheduled tasks to manage.
 
